@@ -134,19 +134,73 @@ class Interpolator1DPCP(Interpolator1D):
 
 
 class Interpolator1DMonotoneConvex(Interpolator1D):
-    """HW7: implement your own monotone, convex IFR interpolator here."""
+    """One quadratic per node interval (inspired by Hagan-West's basic quadratic interpolator).
+
+    On [t_i, t_{i+1}] with h = t_{i+1} - t_i, secant s = (f_{i+1} - f_i) / h and y = t - t_i:
+        f(t) = f_i + d*y + (s - d) * y^2 / h
+    It passes through both node values for any starting slope d, and its slope runs from d to 2s - d.
+    - monotone and convex on the interval  <=>  d lies between min(0, 2s) and s
+    - d = slope the previous quadratic ends with (smooth join); first interval starts with d = s
+    - if that slope is outside the allowed range we clip it, which leaves a small kink at the node
+    One node -> constant. FLAT extrapolation outside the nodes.
+    """
 
     def __init__(self, axis1: np.ndarray, values: np.ndarray,
                  extrapolation_method: ExtrapMethod) -> None:
         super().__init__(axis1, values, InterpMethod.MONOTONE_CONVEX,
                          extrapolation_method)
-        # TODO: Prepare your interpolation method.
+        assert self.extrap_method_ == ExtrapMethod.FLAT
+        self.t = [float(x) for x in axis1]
+        self.f = [float(v) for v in values]
+        self.s = []       # secant slope of each interval
+        self.d = []       # starting slope of each interval's quadratic
+        self.cum = [0.0]  # integral of f from t[0] to each node
+
+        for i in range(len(self.t) - 1):
+            h = self.t[i + 1] - self.t[i]
+            s = (self.f[i + 1] - self.f[i]) / h
+            if i == 0:
+                d = s                                   # first interval: straight line
+            else:
+                d = 2 * self.s[i - 1] - self.d[i - 1]   # continue the previous slope
+            d = min(max(d, min(0.0, 2 * s)), s)         # keep it monotone and convex
+            self.s.append(s)
+            self.d.append(d)
+            self.cum.append(self.cum[-1] + self._area(i, h))
+
+    def _locate(self, x):
+        i = 0
+        while i < len(self.t) - 2 and x >= self.t[i + 1]:
+            i += 1
+        return i
+
+    def _value(self, i, y):
+        h = self.t[i + 1] - self.t[i]
+        return self.f[i] + self.d[i] * y + (self.s[i] - self.d[i]) * y * y / h
+
+    def _area(self, i, y):
+        """Integral of f from t[i] to t[i] + y."""
+        h = self.t[i + 1] - self.t[i]
+        return self.f[i] * y + self.d[i] * y * y / 2 + (self.s[i] - self.d[i]) * y ** 3 / (3 * h)
 
     def interpolate(self, x: float) -> float:
-        raise NotImplementedError("HW7: implement interpolate")
+        if len(self.t) == 1 or x <= self.t[0]:
+            return self.f[0]
+        if x >= self.t[-1]:
+            return self.f[-1]
+        i = self._locate(x)
+        return self._value(i, x - self.t[i])
+
+    def _integral_from_start(self, x):
+        if len(self.t) == 1 or x <= self.t[0]:
+            return self.f[0] * (x - self.t[0])
+        if x >= self.t[-1]:
+            return self.cum[-1] + self.f[-1] * (x - self.t[-1])
+        i = self._locate(x)
+        return self.cum[i] + self._area(i, x - self.t[i])
 
     def integrate(self, start_x: float, end_x: float) -> float:
-        raise NotImplementedError("HW7: implement integrate")
+        return self._integral_from_start(end_x) - self._integral_from_start(start_x)
 
     # Optional risk interface
     # The test cells for risk are not prepared but you can do it by your own.
